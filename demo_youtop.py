@@ -54,7 +54,7 @@ class YouTopDataLoader(object):
             self.output_step = self.input_fps//self.image_step
         
         # make sure chunk_len aligns with input_fps + 1
-        self.shot_chunk_len = (args.shot_chunk_len // self.input_fps) * self.input_fps + 1
+        self.shot_chunk_len = (max(self.input_fps, args.shot_chunk_len) // self.input_fps) * self.input_fps + 1
         self.getImageSize()
 
         output_folder = args.output_template[:args.output_template.rfind('/')]
@@ -78,7 +78,11 @@ class YouTopDataLoader(object):
         return (len(self.shot_list[shot_index]) - 1) * self.input_fps//self.image_step + 1
 
     def getShotChunkNum(self, shot_index):
-        return (self.getShotLen(shot_index) + self.shot_chunk_len - 1) // self.shot_chunk_len
+        shot_len = self.getShotLen(shot_index)
+        # 1 frame overlap between chunks
+        chunk_len = self.shot_chunk_len - 1
+
+        return 1 + (shot_len - self.shot_chunk_len + chunk_len -1) // chunk_len
 
     def getShotImageIndex(self, shot_index):
         image_index_anchor = self.shot_list[shot_index][:-1]
@@ -94,13 +98,12 @@ class YouTopDataLoader(object):
 
 
     def getChunkStat(self, shot_index, chunk_index):
-        chunk_start  = chunk_index * self.shot_chunk_len
+        chunk_start  = chunk_index * (self.shot_chunk_len - 1)
         chunk_len = min(self.shot_chunk_len, self.getShotLen(shot_index) - chunk_start)
         return chunk_start, chunk_len
 
     def getShotData(self, shot_index, chunk_index):
         chunk_start, chunk_len = self.getChunkStat(shot_index, chunk_index)
-        N_frames = np.empty([chunk_len, self.stm_height, self.stm_width, 3], dtype=np.float32)
         N_masks = 255*np.ones([chunk_len, self.stm_height, self.stm_width], dtype=np.uint8)
         
         if chunk_index == 0:
@@ -113,7 +116,10 @@ class YouTopDataLoader(object):
         mask = Image.open(mask_file).convert('P')
         N_masks[0] = np.array(mask.resize((self.stm_width,self.stm_height),Image.NEAREST), dtype=np.uint8)
         K = N_masks[0].max()
+        if K == 0:# no mask to propagate
+            return None, None, K
 
+        N_frames = np.empty([chunk_len, self.stm_height, self.stm_width, 3], dtype=np.float32)
         for f in range(chunk_len):
             index = self.image_index[chunk_start + f]
             image_file = self.image_template % index
@@ -126,6 +132,7 @@ class YouTopDataLoader(object):
             N_masks = (N_masks > 0.5).astype(np.uint8) * (N_masks < 255).astype(np.uint8)
         Ms = torch.from_numpy(self.All_to_onehot(N_masks, K+1).copy()[None,:]).float()
         num_objects = torch.LongTensor([K])
+
         return Fs, Ms, num_objects
 
     def getShotOutputIndex(self, shot_index, chunk_index):
@@ -147,23 +154,27 @@ if __name__ == '__main__' :
     dataloader = YouTopDataLoader(args)
     shot_num = dataloader.getShotNum()
     #shot_num = 1
+    colors = np.vstack([np.array([np.random.randint(0, 255), np.random.randint(0, 255), np.random.randint(0, 255)]) for x in range(20)])
     for shot_id in range(shot_num):
+        print('shot',shot_id)
         anchor_num = dataloader.getShotAnchorLen(shot_id)
         if anchor_num == 1: # only one anchor frame, no need to propagate
             continue
         dataloader.getShotImageIndex(shot_id)
         chunk_num = dataloader.getShotChunkNum(shot_id)
         for chunk_id in range(chunk_num):
-            Fs, Ms, num_objects = dataloader.getShotData(shot_id, chunk_id)
-            pred, Es = Run_video(model, Fs, Ms, Fs.shape[2], num_objects,\
-                                 Mem_every = args.stm_mem_step, Mem_number=None)
             result_id, output_id = dataloader.getShotOutputIndex(shot_id, chunk_id)
-            for z in range(len(result_id)):
-                if args.output_vis == 0:
-                    output = Image.fromarray(pred[result_id[z]])
-                else:
-                    pF = (Fs[0,:,result_id[z]].permute(1,2,0).numpy() * 255.).astype(np.uint8)
-                    pE = pred[result_id[z]]
-                    output = Image.fromarray(overlay_davis(pF, pE))
-                output.resize((dataloader.width, dataloader.height),Image.NEAREST)
-                output.save(dataloader.output_template % output_id[z])
+            if not os.path.exists(dataloader.output_template % output_id[-1]):
+                Fs, Ms, num_objects = dataloader.getShotData(shot_id, chunk_id)
+                if num_objects > 0:
+                    pred, Es = Run_video(model, Fs, Ms, Fs.shape[2], num_objects,\
+                                         Mem_every = args.stm_mem_step, Mem_number=None)
+                    for z in range(len(result_id)):
+                        if args.output_vis == 0:
+                            output = Image.fromarray(pred[result_id[z]])
+                        else:
+                            pF = (Fs[0,:,result_id[z]].permute(1,2,0).numpy() * 255.).astype(np.uint8)
+                            pE = pred[result_id[z]]
+                            output = Image.fromarray(overlay_davis(pF, pE, colors))
+                        output.resize((dataloader.width, dataloader.height),Image.NEAREST)
+                        output.save(dataloader.output_template % output_id[z])
