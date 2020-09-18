@@ -146,7 +146,7 @@ if __name__ == '__main__' :
     args = get_arguments()
     dataloader = YouTopDataLoader(args)
     shot_num = dataloader.getShotNum()
-    shot_num = 1
+    #shot_num = 1
     for shot_id in range(shot_num):
         anchor_num = dataloader.getShotAnchorLen(shot_id)
         if anchor_num == 1: # only one anchor frame, no need to propagate
