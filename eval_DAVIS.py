@@ -10,8 +10,6 @@ import torch.utils.model_zoo as model_zoo
 from torchvision import models
 
 # general libs
-import cv2
-import matplotlib.pyplot as plt
 from PIL import Image
 import numpy as np
 import math
@@ -27,7 +25,6 @@ from dataset import DAVIS_MO_Test
 from model import STM
 
 
-torch.set_grad_enabled(False) # Volatile
 
 def get_arguments():
     parser = argparse.ArgumentParser(description="SST")
@@ -38,30 +35,7 @@ def get_arguments():
     parser.add_argument("-D", type=str, help="path to data",default='/local/DATA')
     return parser.parse_args()
 
-args = get_arguments()
-
-GPU = args.g
-YEAR = args.y
-SET = args.s
-VIZ = args.viz
-DATA_ROOT = args.D
-
-# Model and version
-MODEL = 'STM'
-print(MODEL, ': Testing on DAVIS')
-
-os.environ['CUDA_VISIBLE_DEVICES'] = GPU
-if torch.cuda.is_available():
-    print('using Cuda devices, num:', torch.cuda.device_count())
-
-if VIZ:
-    print('--- Produce mask overaid video outputs. Evaluation will run slow.')
-    print('--- Require FFMPEG for encoding, Check folder ./viz')
-
-
-palette = Image.open(DATA_ROOT + '/Annotations/480p/blackswan/00000.png').getpalette()
-
-def Run_video(Fs, Ms, num_frames, num_objects, Mem_every=None, Mem_number=None):
+def Run_video(model, Fs, Ms, num_frames, num_objects, Mem_every=None, Mem_number=None):
     # initialize storage tensors
     if Mem_every:
         to_memorize = [int(i) for i in np.arange(0, num_frames, step=Mem_every)]
@@ -96,58 +70,80 @@ def Run_video(Fs, Ms, num_frames, num_objects, Mem_every=None, Mem_number=None):
     pred = np.argmax(Es[0].cpu().numpy(), axis=0).astype(np.uint8)
     return pred, Es
 
+if __name__ == '__main__' :
+    torch.set_grad_enabled(False) # Volatile
 
+    args = get_arguments()
+    GPU = args.g
+    YEAR = args.y
+    SET = args.s
+    VIZ = args.viz
+    DATA_ROOT = args.D
 
-Testset = DAVIS_MO_Test(DATA_ROOT, resolution='480p', imset='20{}/{}.txt'.format(YEAR,SET), single_object=(YEAR==16))
-Testloader = data.DataLoader(Testset, batch_size=1, shuffle=False, num_workers=2, pin_memory=True)
+    # Model and version
+    MODEL = 'STM'
+    print(MODEL, ': Testing on DAVIS')
 
-model = nn.DataParallel(STM())
-if torch.cuda.is_available():
-    model.cuda()
-model.eval() # turn-off BN
-
-pth_path = 'STM_weights.pth'
-print('Loading weights:', pth_path)
-model.load_state_dict(torch.load(pth_path))
-
-code_name = '{}_DAVIS_{}{}'.format(MODEL,YEAR,SET)
-print('Start Testing:', code_name)
-
-
-for seq, V in enumerate(Testloader):
-    Fs, Ms, num_objects, info = V
-    seq_name = info['name'][0]
-    num_frames = info['num_frames'][0].item()
-    print('[{}]: num_frames: {}, num_objects: {}'.format(seq_name, num_frames, num_objects[0][0]))
-    
-    pred, Es = Run_video(Fs, Ms, num_frames, num_objects, Mem_every=5, Mem_number=None)
-        
-    # Save results for quantitative eval ######################
-    test_path = os.path.join('./test', code_name, seq_name)
-    if not os.path.exists(test_path):
-        os.makedirs(test_path)
-    for f in range(num_frames):
-        img_E = Image.fromarray(pred[f])
-        img_E.putpalette(palette)
-        img_E.save(os.path.join(test_path, '{:05d}.png'.format(f)))
+    os.environ['CUDA_VISIBLE_DEVICES'] = GPU
+    if torch.cuda.is_available():
+        print('using Cuda devices, num:', torch.cuda.device_count())
 
     if VIZ:
-        from helpers import overlay_davis
-        # visualize results #######################
-        viz_path = os.path.join('./viz/', code_name, seq_name)
-        if not os.path.exists(viz_path):
-            os.makedirs(viz_path)
+        print('--- Produce mask overaid video outputs. Evaluation will run slow.')
+        print('--- Require FFMPEG for encoding, Check folder ./viz')
 
+
+    palette = Image.open(DATA_ROOT + '/Annotations/480p/blackswan/00000.png').getpalette()
+
+
+
+    Testset = DAVIS_MO_Test(DATA_ROOT, resolution='480p', imset='20{}/{}.txt'.format(YEAR,SET), single_object=(YEAR==16))
+    Testloader = data.DataLoader(Testset, batch_size=1, shuffle=False, num_workers=2, pin_memory=True)
+
+    model = nn.DataParallel(STM())
+    if torch.cuda.is_available():
+        model.cuda()
+    model.eval() # turn-off BN
+
+    pth_path = 'STM_weights.pth'
+    print('Loading weights:', pth_path)
+    model.load_state_dict(torch.load(pth_path))
+
+    code_name = '{}_DAVIS_{}{}'.format(MODEL,YEAR,SET)
+    print('Start Testing:', code_name)
+
+
+    for seq, V in enumerate(Testloader):
+        Fs, Ms, num_objects, info = V
+        seq_name = info['name'][0]
+        num_frames = info['num_frames'][0].item()
+        print('[{}]: num_frames: {}, num_objects: {}'.format(seq_name, num_frames, num_objects[0][0]))
+        
+        pred, Es = Run_video(model, Fs, Ms, num_frames, num_objects, Mem_every=5, Mem_number=None)
+            
+        # Save results for quantitative eval ######################
+        test_path = os.path.join('./test', code_name, seq_name)
+        if not os.path.exists(test_path):
+            os.makedirs(test_path)
         for f in range(num_frames):
-            pF = (Fs[0,:,f].permute(1,2,0).numpy() * 255.).astype(np.uint8)
-            pE = pred[f]
-            canvas = overlay_davis(pF, pE, palette)
-            canvas = Image.fromarray(canvas)
-            canvas.save(os.path.join(viz_path, 'f{}.jpg'.format(f)))
+            img_E = Image.fromarray(pred[f])
+            img_E.putpalette(palette)
+            img_E.save(os.path.join(test_path, '{:05d}.png'.format(f)))
 
-        vid_path = os.path.join('./viz/', code_name, '{}.mp4'.format(seq_name))
-        frame_path = os.path.join('./viz/', code_name, seq_name, 'f%d.jpg')
-        os.system('ffmpeg -framerate 10 -i {} {} -vcodec libx264 -crf 10  -pix_fmt yuv420p  -nostats -loglevel 0 -y'.format(frame_path, vid_path))
+        if VIZ:
+            from helpers import overlay_davis
+            # visualize results #######################
+            viz_path = os.path.join('./viz/', code_name, seq_name)
+            if not os.path.exists(viz_path):
+                os.makedirs(viz_path)
 
+            for f in range(num_frames):
+                pF = (Fs[0,:,f].permute(1,2,0).numpy() * 255.).astype(np.uint8)
+                pE = pred[f]
+                canvas = overlay_davis(pF, pE, palette)
+                canvas = Image.fromarray(canvas)
+                canvas.save(os.path.join(viz_path, 'f{}.jpg'.format(f)))
 
-
+            vid_path = os.path.join('./viz/', code_name, '{}.mp4'.format(seq_name))
+            frame_path = os.path.join('./viz/', code_name, seq_name, 'f%d.jpg')
+            os.system('ffmpeg -framerate 10 -i {} {} -vcodec libx264 -crf 10  -pix_fmt yuv420p  -nostats -loglevel 0 -y'.format(frame_path, vid_path))

@@ -11,8 +11,6 @@ import torch.utils.model_zoo as model_zoo
 from torchvision import models
 
 # general libs
-import cv2
-import matplotlib.pyplot as plt
 from PIL import Image
 import numpy as np
 import time
@@ -63,7 +61,7 @@ def overlay_davis(image,mask,colors=[255,0,0],cscale=2,alpha=0.4):
 
     for object_id in object_ids[1:]:
         # Overlay color on  binary mask
-        foreground = image*alpha + np.ones(image.shape)*(1-alpha) * np.array(colors[object_id])
+        foreground = image*alpha + np.ones(image.shape)*(1-alpha) * np.array(colors[object_id-1])
         binary_mask = mask == object_id
 
         # Compose image
