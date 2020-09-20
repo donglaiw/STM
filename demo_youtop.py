@@ -226,7 +226,6 @@ if __name__ == '__main__' :
                     pred, Es = Run_video(model, Fs, Ms, Fs.shape[2], num_objects,\
                                          Mem_every = args.stm_mem_step, Mem_number=None)
 
-                    import pdb; pdb.set_trace()
                     pred = mask_id_relabel_inv[pred]
                     for z in range(len(result_id)):
                         if args.output_vis == 0:
