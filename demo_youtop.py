@@ -1,6 +1,5 @@
 import os,sys
 import shutil
-from shutil import copyfile
 import subprocess
 from PIL import Image
 import argparse
@@ -13,6 +12,11 @@ import torch.nn as nn
 from eval_DAVIS import Run_video
 from model import STM
 from helpers import overlay_davis
+
+# 64 different colors
+# avoid using matplotlib
+colors=[[255,0,0],[0,255,0],[0,0,255], [255,255,0], [255,0,255],[0,255,255],[0,128,255],[128,0,255],[255,128,0],[0,255,128],[128,255,0],[255,0,128]]
+
 
 def get_arguments():
     parser = argparse.ArgumentParser(description="SST")
@@ -27,14 +31,33 @@ def get_arguments():
     parser.add_argument("--stm-height", type=int, help="image resize for propagation",default=480)
     parser.add_argument("--shot-chunk-len", type=int, help="max number of images for propagation",default=60)
     parser.add_argument("--stm-mem-step", type=int, help="memory step for propagation",default=1)
+    parser.add_argument("--redo", type=int, help="overwrite previous results",default=0)
     return parser.parse_args()
-
 def convertClusterStrToList(input_str):
     if input_str[-1] == ';':
         input_str = input_str[:-1]
     output_list = [np.array([int(y) for y in x.split(',')]) for x in input_str.split(';')]
 
     return output_list
+
+def extractId(fn):
+    err = 0
+    offset = 0
+    if '/' in fn:
+        offset = fn.rfind('/')+1
+        fn = fn[offset:]
+    sid = 0
+    while sid < len(fn) and (not fn[sid].isnumeric()):
+        sid += 1
+    if sid == len(fn)-1:
+        err = 1
+    else:
+        lid = sid + 1
+        while lid < len(fn) and fn[lid].isnumeric():
+            lid += 1
+    if err > 0:
+        raise ValueError('No number found in ' + fn)
+    return int(fn[sid:lid]), [offset+sid, offset+lid]
 
 class YouTopDataLoader(object):
     def __init__(self, args):
@@ -46,15 +69,27 @@ class YouTopDataLoader(object):
         self.output_template = args.output_template
         self.input_fps = args.input_fps
         self.image_step = args.image_step
-        self.mask_files = sorted(glob.glob(args.mask_folder + '/*.png'))
         self.shot_list = convertClusterStrToList(args.input_index)
+        self.shot_num = len(self.shot_list)
+        # start from 0
+        mask_files = sorted(glob.glob(args.mask_folder + '/*.png'))
+        if len(mask_files) != self.shot_num: # exist empty frames
+            sid, pos = extractId(mask_files[0])
+            lid, _ = extractId(mask_files[-1])
+            print('exist missing mask file: ',sid,lid,self.shot_num)
+            mask_template = mask_files[0][:pos[0]] + '%0' + str(pos[1]-pos[0]) + 'd' + mask_files[0][pos[1]:]
+            if lid - sid + 1 != self.shot_num: # assume start from 0
+                lid = max(lid, self.shot_num-1)
+                sid = lid-self.shot_num+1
+            mask_files = [mask_template % x for x in range(sid,lid+1)]
+        self.mask_files = mask_files 
         self.stm_height = args.stm_height
         self.output_step = args.output_step
         if self.output_step == 0:
             self.output_step = self.input_fps//self.image_step
         
         # make sure chunk_len aligns with input_fps + 1
-        self.shot_chunk_len = (max(self.input_fps, args.shot_chunk_len) // self.input_fps) * self.input_fps + 1
+        self.shot_chunk_len = (max(self.output_step, args.shot_chunk_len) // self.output_step) * self.output_step + 1
         self.getImageSize()
 
         output_folder = args.output_template[:args.output_template.rfind('/')]
@@ -67,8 +102,6 @@ class YouTopDataLoader(object):
         self.width, self.height = tmp_image.size  
         self.stm_width = int(self.width/float(self.height)*self.stm_height)
 
-    def getShotNum(self):
-        return len(self.shot_list)
 
     def getShotAnchorLen(self, shot_index):
         return len(self.shot_list[shot_index])
@@ -112,12 +145,27 @@ class YouTopDataLoader(object):
         else:
             # read from prop mask
             mask_file = self.output_template % self.image_index[chunk_start]
+        if not os.path.exists(mask_file):
+            print('%s does not exist!' % mask_file)
+            return None, None, 0, None
 
         mask = Image.open(mask_file).convert('P')
         N_masks[0] = np.array(mask.resize((self.stm_width,self.stm_height),Image.NEAREST), dtype=np.uint8)
+        # sometimes the mask ids are not range(K)
+        # assume < 255 objects
+        mask_id = np.unique(N_masks[0])
+        mask_id_num = (mask_id>0).sum()
+        mask_id_relabel = np.zeros(mask_id.max()+1, np.uint8)
+        mask_id_relabel[mask_id[mask_id>0]] = range(1, 1+mask_id_num)
+        mask_id_relabel[mask_id[mask_id>0]] = range(1, 1+mask_id_num)
+
+        mask_id_relabel_inv = np.zeros(mask_id_num+1, np.uint8)
+        mask_id_relabel_inv[1:] = mask_id[mask_id>0]
+        N_masks[0] = mask_id_relabel[N_masks[0]]
+
         K = N_masks[0].max()
         if K == 0:# no mask to propagate
-            return None, None, K
+            return None, None, K, None
 
         N_frames = np.empty([chunk_len, self.stm_height, self.stm_width, 3], dtype=np.float32)
         for f in range(chunk_len):
@@ -133,7 +181,7 @@ class YouTopDataLoader(object):
         Ms = torch.from_numpy(self.All_to_onehot(N_masks, K+1).copy()[None,:]).float()
         num_objects = torch.LongTensor([K])
 
-        return Fs, Ms, num_objects
+        return Fs, Ms, num_objects, mask_id_relabel_inv
 
     def getShotOutputIndex(self, shot_index, chunk_index):
         chunk_start, chunk_len = self.getChunkStat(shot_index, chunk_index)
@@ -152,23 +200,34 @@ if __name__ == '__main__' :
     # load data
     args = get_arguments()
     dataloader = YouTopDataLoader(args)
-    shot_num = dataloader.getShotNum()
-    #shot_num = 1
-    colors = np.vstack([np.array([np.random.randint(0, 255), np.random.randint(0, 255), np.random.randint(0, 255)]) for x in range(20)])
-    for shot_id in range(shot_num):
+    # util
+    for shot_id in range(dataloader.shot_num):
         print('shot',shot_id)
+        dataloader.getShotImageIndex(shot_id)
+        # copy first frame mask
+        mask_file_out = dataloader.output_template % dataloader.image_index[0]
+        if args.redo or not os.path.exists(mask_file_out):
+            mask_file_in = dataloader.mask_files[shot_id]
+            if os.path.exists(mask_file_in):
+                shutil.copyfile(mask_file_in, mask_file_out)
+            else:
+                output = Image.fromarray(np.zeros([dataloader.height, dataloader.width], np.uint8))
+                output.save(mask_file_out)
+
         anchor_num = dataloader.getShotAnchorLen(shot_id)
         if anchor_num == 1: # only one anchor frame, no need to propagate
             continue
-        dataloader.getShotImageIndex(shot_id)
         chunk_num = dataloader.getShotChunkNum(shot_id)
         for chunk_id in range(chunk_num):
             result_id, output_id = dataloader.getShotOutputIndex(shot_id, chunk_id)
-            if not os.path.exists(dataloader.output_template % output_id[-1]):
-                Fs, Ms, num_objects = dataloader.getShotData(shot_id, chunk_id)
+            if args.redo or not os.path.exists(dataloader.output_template % output_id[-1]):
+                Fs, Ms, num_objects, mask_id_relabel_inv = dataloader.getShotData(shot_id, chunk_id)
                 if num_objects > 0:
                     pred, Es = Run_video(model, Fs, Ms, Fs.shape[2], num_objects,\
                                          Mem_every = args.stm_mem_step, Mem_number=None)
+
+                    import pdb; pdb.set_trace()
+                    pred = mask_id_relabel_inv[pred]
                     for z in range(len(result_id)):
                         if args.output_vis == 0:
                             output = Image.fromarray(pred[result_id[z]])
@@ -176,5 +235,5 @@ if __name__ == '__main__' :
                             pF = (Fs[0,:,result_id[z]].permute(1,2,0).numpy() * 255.).astype(np.uint8)
                             pE = pred[result_id[z]]
                             output = Image.fromarray(overlay_davis(pF, pE, colors))
-                        output.resize((dataloader.width, dataloader.height),Image.NEAREST)
+                        output = output.resize((dataloader.width, dataloader.height),Image.NEAREST)
                         output.save(dataloader.output_template % output_id[z])
