@@ -223,6 +223,7 @@ if __name__ == '__main__' :
             if args.redo or not os.path.exists(dataloader.output_template % output_id[-1]):
                 Fs, Ms, num_objects, mask_id_relabel_inv = dataloader.getShotData(shot_id, chunk_id)
                 if num_objects > 0:
+                    print(chunk_id, num_objects)
                     pred, Es = Run_video(model, Fs, Ms, Fs.shape[2], num_objects,\
                                          Mem_every = args.stm_mem_step, Mem_number=None)
 
