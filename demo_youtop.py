@@ -13,7 +13,6 @@ from eval_DAVIS import Run_video
 from model import STM
 from helpers import overlay_davis
 
-# 64 different colors
 # avoid using matplotlib
 colors=[[255,0,0],[0,255,0],[0,0,255], [255,255,0], [255,0,255],[0,255,255],[0,128,255],[128,0,255],[255,128,0],[0,255,128],[128,255,0],[255,0,128]]
 
@@ -32,7 +31,11 @@ def get_arguments():
     parser.add_argument("--shot-chunk-len", type=int, help="max number of images for propagation",default=60)
     parser.add_argument("--stm-mem-step", type=int, help="memory step for propagation",default=1)
     parser.add_argument("--redo", type=int, help="overwrite previous results",default=0)
-    return parser.parse_args()
+    parser.add_argument("--output-index-factor", type=str, help="need to (x-b)/k for output index",default='1,0')
+    args = parser.parse_args()
+    args.output_index_factor = [int(x) for x in args.output_index_factor.split(',')]
+    return args
+
 def convertClusterStrToList(input_str):
     if input_str[-1] == ';':
         input_str = input_str[:-1]
@@ -71,8 +74,11 @@ class YouTopDataLoader(object):
         self.image_step = args.image_step
         self.shot_list = convertClusterStrToList(args.input_index)
         self.shot_num = len(self.shot_list)
+        self.output_index_factor = args.output_index_factor
         # start from 0
         mask_files = sorted(glob.glob(args.mask_folder + '/*.png'))
+        if len(mask_files) == 0:
+            sys.exit('no reference mask provided')
         if len(mask_files) != self.shot_num: # exist empty frames
             sid, pos = extractId(mask_files[0])
             lid, _ = extractId(mask_files[-1])
@@ -94,7 +100,10 @@ class YouTopDataLoader(object):
 
         output_folder = args.output_template[:args.output_template.rfind('/')]
         if not os.path.exists(output_folder):
-            os.makedir(output_folder)
+            os.makedirs(output_folder)
+
+    def convertIndexOutput(self, ind):
+        return (ind - self.output_index_factor[1]) // self.output_index_factor[0]
 
     def getImageSize(self):
         tmp_image_template = self.image_template % self.shot_list[0][0]
@@ -139,15 +148,25 @@ class YouTopDataLoader(object):
         chunk_start, chunk_len = self.getChunkStat(shot_index, chunk_index)
         N_masks = 255*np.ones([chunk_len, self.stm_height, self.stm_width], dtype=np.uint8)
         
+        mask_file_id = chunk_index
         if chunk_index == 0:
             # read from input mask
             mask_file = self.mask_files[shot_index]
         else:
             # read from prop mask
-            mask_file = self.output_template % self.image_index[chunk_start]
+            mask_file = self.output_template % self.convertIndexOutput(self.image_index[chunk_start])
+
         if not os.path.exists(mask_file):
             print('%s does not exist!' % mask_file)
-            return None, None, 0, None
+            if chunk_index != 0:
+                # object disappears in the middle, use the first frame
+                mask_file = self.mask_files[shot_index]
+                print('load first frame: %s!' % mask_file)
+                mask_file_id = 0
+                if not os.path.exists(mask_file):
+                    return None, None, 0, None
+            else:
+                return None, None, 0, None
 
         mask = Image.open(mask_file).convert('P')
         N_masks[0] = np.array(mask.resize((self.stm_width,self.stm_height),Image.NEAREST), dtype=np.uint8)
@@ -169,7 +188,10 @@ class YouTopDataLoader(object):
 
         N_frames = np.empty([chunk_len, self.stm_height, self.stm_width, 3], dtype=np.float32)
         for f in range(chunk_len):
-            index = self.image_index[chunk_start + f]
+            if f == 0 and mask_file_id == 0:
+                index = self.image_index[0]
+            else:
+                index = self.image_index[chunk_start + f]
             image_file = self.image_template % index
             image = Image.open(image_file).convert('RGB')
             N_frames[f] = np.array(image.resize((self.stm_width,self.stm_height),Image.BILINEAR))/255.
@@ -186,7 +208,7 @@ class YouTopDataLoader(object):
     def getShotOutputIndex(self, shot_index, chunk_index):
         chunk_start, chunk_len = self.getChunkStat(shot_index, chunk_index)
         result_index = np.arange(self.output_step, chunk_len, self.output_step)
-        return result_index, self.image_index[chunk_start + result_index]
+        return result_index, self.convertIndexOutput(self.image_index[chunk_start + result_index])
 
 if __name__ == '__main__' :
     # load model
@@ -199,13 +221,14 @@ if __name__ == '__main__' :
 
     # load data
     args = get_arguments()
+    print('save to '+ args.output_template)
     dataloader = YouTopDataLoader(args)
     # util
     for shot_id in range(dataloader.shot_num):
         print('shot',shot_id)
         dataloader.getShotImageIndex(shot_id)
         # copy first frame mask
-        mask_file_out = dataloader.output_template % dataloader.image_index[0]
+        mask_file_out = dataloader.output_template % dataloader.convertIndexOutput(dataloader.image_index[0])
         if args.redo or not os.path.exists(mask_file_out):
             mask_file_in = dataloader.mask_files[shot_id]
             if os.path.exists(mask_file_in):
@@ -223,7 +246,7 @@ if __name__ == '__main__' :
             if args.redo or not os.path.exists(dataloader.output_template % output_id[-1]):
                 Fs, Ms, num_objects, mask_id_relabel_inv = dataloader.getShotData(shot_id, chunk_id)
                 if num_objects > 0:
-                    print(chunk_id, num_objects)
+                    print('chunk_id:',chunk_id, 'num_object:', num_objects)
                     pred, Es = Run_video(model, Fs, Ms, Fs.shape[2], num_objects,\
                                          Mem_every = args.stm_mem_step, Mem_number=None)
 
