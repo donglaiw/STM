@@ -45,7 +45,7 @@ def Run_video(model, Fs, Ms, num_frames, num_objects, st_frames=1, Mem_every=Non
         raise NotImplementedError
 
     Es = torch.zeros_like(Ms)
-    Es[:,:,0] = Ms[:,:,0]
+    Es[:,:,:st_frames] = Ms[:,:,:st_frames]
 
     # create keys, values
     keys = None

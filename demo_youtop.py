@@ -72,6 +72,13 @@ def relabelMask(mask):
     mask_id_relabel_inv[1:] = mask_id[mask_id>0]
     return mask_id_relabel, mask_id_relabel_inv
 
+def visualizeMask(im, mask, template_output='./db/test%d.png'):
+    for z in range(im.shape[0]):
+        pF = (im[z] * 255.).astype(np.uint8)
+        pE = mask[z]
+        output = Image.fromarray(overlay_davis(pF, pE, colors))
+        output.save(template_output % z)
+
 def removeArr(arr1, arr2):
     return arr1[np.in1d(arr1, arr2, invert=True)]
 
@@ -285,10 +292,10 @@ if __name__ == '__main__' :
         dataloader.getShotImageIndex(shot_id)
 
         # copy or create template frames
-        for index in dataloader.mask_index: 
+        for i,index in enumerate(dataloader.mask_index): 
             mask_file_out = dataloader.mask_template_output % dataloader.convertIndexOutput(index)
             if args.redo or not os.path.exists(mask_file_out):
-                mask_file_in = dataloader.mask_files[shot_id]
+                mask_file_in = dataloader.mask_files[dataloader.mask_file_index[i]]
                 if os.path.exists(mask_file_in):
                     shutil.copyfile(mask_file_in, mask_file_out)
                 else:
@@ -301,6 +308,8 @@ if __name__ == '__main__' :
 
         # preload the mask
         N_frames, N_masks = dataloader.loadSTMData(shot_id)
+        # visualizeMask(N_frames[:dataloader.mask_num], N_masks[:dataloader.mask_num])
+        # check volume
         mask_id_relabel, mask_id_relabel_inv = relabelMask(N_masks[:dataloader.mask_num])
         if mask_id_relabel.max() == 0:
             print('non-existent or empty mask files', [dataloader.mask_files[x] for x in dataloader.mask_file_index])
