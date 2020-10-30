@@ -35,7 +35,7 @@ def get_arguments():
     parser.add_argument("-D", type=str, help="path to data",default='/local/DATA')
     return parser.parse_args()
 
-def Run_video(model, Fs, Ms, num_frames, num_objects, Mem_every=None, Mem_number=None):
+def Run_video(model, Fs, Ms, num_frames, num_objects, st_frames=1, Mem_every=None, Mem_number=None):
     # initialize storage tensors
     if Mem_every:
         to_memorize = [int(i) for i in np.arange(0, num_frames, step=Mem_every)]
@@ -47,14 +47,30 @@ def Run_video(model, Fs, Ms, num_frames, num_objects, Mem_every=None, Mem_number
     Es = torch.zeros_like(Ms)
     Es[:,:,0] = Ms[:,:,0]
 
-    for t in tqdm.tqdm(range(1, num_frames)):
-        # memorize
+    # create keys, values
+    keys = None
+    values = None
+    for t in range(st_frames):
+        if Fs[:,:,t].max() == 0:# black image -> skip it
+            continue
         with torch.no_grad():
-            prev_key, prev_value = model(Fs[:,:,t-1], Es[:,:,t-1], torch.tensor([num_objects])) 
-
-        if t-1 == 0: # 
-            this_keys, this_values = prev_key, prev_value # only prev memory
+            prev_key, prev_value = model(Fs[:,:,t], Es[:,:,t], torch.tensor([num_objects])) 
+        if keys is None:
+            keys, values = prev_key, prev_value # only prev memory
         else:
+            keys = torch.cat([keys, prev_key], dim=3)
+            values = torch.cat([values, prev_value], dim=3)
+    this_keys, this_values = keys, values # only prev memory
+    # one of the mask can't be empty
+
+    for t in tqdm.tqdm(range(st_frames, num_frames)):
+        # memorize
+        if Fs[:,:,t].max() == 0:# black image -> skip it
+            continue
+        
+        if t > st_frames and Fs[:,:,t-1].max() > 0:# black image -> don't add to memory
+            with torch.no_grad():
+                prev_key, prev_value = model(Fs[:,:,t-1], Es[:,:,t-1], torch.tensor([num_objects])) 
             this_keys = torch.cat([keys, prev_key], dim=3)
             this_values = torch.cat([values, prev_value], dim=3)
         
