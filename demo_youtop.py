@@ -175,7 +175,7 @@ class YouTopDataLoader(object):
         else:
             # use k-anchors
             mask_step = self.stm_anchor_num - 1
-            self.chunk_num = 1 + ((len(self.mask_files) - self.stm_anchor_num) + (mask_step - 1)) // mask_step
+            self.chunk_num = 1 + ((len(self.mask_index) - self.stm_anchor_num) + (mask_step - 1)) // mask_step
 
     def getShotImageIndex(self, shot_index):
         # original frame index
@@ -209,16 +209,15 @@ class YouTopDataLoader(object):
             chunk_len = min(chunk_len, len(self.image_index) - chunk_start)
         else:
             if chunk_index == 0:
-                anchor_index = self.mask_ids[self.stm_anchor_num-1]
+                anchor_index = self.mask_index[self.stm_anchor_num-1]
                 todo_index = np.where(self.image_index < anchor_index)[0]
             elif chunk_index == self.chunk_num - 1:
-                anchor_index = self.mask_ids[(self.stm_anchor_num - 1) * chunk_index]
+                anchor_index = self.mask_index[(self.stm_anchor_num - 1) * chunk_index]
                 todo_index = np.where(self.image_index > anchor_index)[0]
             else:
                 st_index = (self.stm_anchor_num - 1) * chunk_index
-                anchor_index = self.mask_ids[st_index : st_index + self.stm_anchor_num]
+                anchor_index = self.mask_index[st_index : st_index + self.stm_anchor_num]
                 todo_index = np.where((self.image_index > anchor_index[0])*(self.image_index < anchor_index[-1]))[0]
-
 
             chunk_len = len(todo_index)
             chunk_start = todo_index[0] if chunk_len>0 else -1 
@@ -243,6 +242,7 @@ class YouTopDataLoader(object):
                 image_file = self.image_template % index
                 image = Image.open(image_file).convert('RGB')
                 N_frames[f] = np.array(image.resize((self.stm_width,self.stm_height),Image.BILINEAR))/255.
+                # print('init',mask_name,image_file)
         return N_frames, N_masks
 
     def updateSTMData(self, shot_index, chunk_index, N_frames, N_masks, mask_id_relabel):
@@ -276,15 +276,17 @@ class YouTopDataLoader(object):
                     N_masks[:] = 0
                     N_frames[:] = 0
                     st_index = (self.stm_anchor_num - 1) * chunk_index
-                    anchor_index = range(st_index, min(len(self.mask_ids), st_index + self.stm_anchor_num))
+                    anchor_index = self.mask_file_index[range(st_index, min(len(self.mask_ids), st_index + self.stm_anchor_num))]
                     self.mask_num = len(anchor_index)
                     #import pdb; pdb.set_trace()
                     for i,j in enumerate(anchor_index):
-                        mask = Image.open(self.mask_files[j]).convert('P')
+                        mask_file = self.mask_files[j]
+                        mask = Image.open(mask_file).convert('P')
                         N_masks[i] = mask_id_relabel[np.array(mask.resize((self.stm_width,self.stm_height),Image.NEAREST), dtype=np.uint8)]
                         image_file = self.image_template % self.mask_ids[j]
                         image = Image.open(image_file).convert('RGB')
                         N_frames[i] = np.array(image.resize((self.stm_width,self.stm_height),Image.BILINEAR))/255.
+                        # print('init',mask_file,image_file)
                 K = N_masks[:self.mask_num].max()
             if K == 0:# no mask to propagate
                 return None, None, 0
@@ -311,7 +313,6 @@ class YouTopDataLoader(object):
         # remove already saved mask seg
         tosave_index = removeArr(self.shot_list[shot_index], self.mask_index)
         output_id = np.in1d(output_index, tosave_index)
-        # import pdb; pdb.set_trace()
         return self.mask_num + result_index[output_id], self.convertIndexOutput(output_index[output_id])
 
 
@@ -366,6 +367,8 @@ if __name__ == '__main__' :
         dataloader.getShotChunkNum(shot_id)
         for chunk_id in range(dataloader.chunk_num):
             result_id, output_id = dataloader.getShotOutputIndex(shot_id, chunk_id)
+            if len(output_id) == 0:
+                import pdb; pdb.set_trace()
             #import pdb; pdb.set_trace()
             if args.redo or not os.path.exists(dataloader.mask_template_output % output_id[-1]):
                 Fs, Ms, num_objects = dataloader.updateSTMData(shot_id, chunk_id, N_frames, N_masks, mask_id_relabel)
@@ -384,5 +387,4 @@ if __name__ == '__main__' :
                             pE = pred[result_id[z]]
                             output = Image.fromarray(overlay_davis(pF, pE, colors))
                         output = output.resize((dataloader.width, dataloader.height),Image.NEAREST)
-                        print(output_id[z])
                         output.save(dataloader.mask_template_output % output_id[z])
