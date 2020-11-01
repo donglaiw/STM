@@ -31,6 +31,7 @@ def get_arguments():
     parser.add_argument("--stm-step", type=int, help="image step for propagation",default=1)
     parser.add_argument("--stm-mem-len", type=int, help="max number of images for propagation",default=60)
     parser.add_argument("--stm-mem-step", type=int, help="memory step for propagation",default=1)
+    parser.add_argument("--stm-anchor-num", type=int, help="number of anchor to use for stm",default=-1)
     parser.add_argument("--redo", type=int, help="overwrite previous results",default=0)
     args = parser.parse_args()
     args.mask_index_factor = [int(x) for x in args.mask_index_factor.split(',')]
@@ -120,6 +121,7 @@ class YouTopDataLoader(object):
         # how many steps needed for one output mask
         stm_step_num = self.mask_index_factor_output[0]//self.stm_step
         self.stm_mem_len = (max(stm_step_num, args.stm_mem_len) // stm_step_num) * stm_step_num + 1
+        self.stm_anchor_num = args.stm_anchor_num
 
     def getMaskInfo(self):
         # start from 0
@@ -164,11 +166,16 @@ class YouTopDataLoader(object):
         return len(self.shot_list[shot_index])
 
     def getShotChunkNum(self, shot_index):
-        shot_len = len(self.image_index)
-        # The length for every chunk is chunk_len
-        chunk_len = self.stm_mem_len - len(self.mask_index)
-        chunk_num = (shot_len + chunk_len -1) // chunk_len
-        return chunk_num
+        if self.stm_anchor_num == -1: 
+            # use all anchors
+            shot_len = len(self.image_index)
+            # The length for every chunk is chunk_len
+            chunk_len = self.stm_mem_len - len(self.mask_index)
+            self.chunk_num = (shot_len + chunk_len -1) // chunk_len
+        else:
+            # use k-anchors
+            mask_step = self.stm_anchor_num - 1
+            self.chunk_num = 1 + ((len(self.mask_files) - self.stm_anchor_num) + (mask_step - 1)) // mask_step
 
     def getShotImageIndex(self, shot_index):
         # original frame index
@@ -196,16 +203,38 @@ class YouTopDataLoader(object):
         return Ms
 
     def getChunkIndexLocal(self, shot_index, chunk_index):
-        chunk_len = self.stm_mem_len - self.mask_num 
-        chunk_start = chunk_index * chunk_len
-        chunk_len = min(chunk_len, len(self.image_index) - chunk_start)
+        if self.stm_anchor_num == -1:
+            chunk_len = self.stm_mem_len - self.mask_num 
+            chunk_start = chunk_index * chunk_len
+            chunk_len = min(chunk_len, len(self.image_index) - chunk_start)
+        else:
+            if chunk_index == 0:
+                anchor_index = self.mask_ids[self.stm_anchor_num-1]
+                todo_index = np.where(self.image_index < anchor_index)[0]
+            elif chunk_index == self.chunk_num - 1:
+                anchor_index = self.mask_ids[(self.stm_anchor_num - 1) * chunk_index]
+                todo_index = np.where(self.image_index > anchor_index)[0]
+            else:
+                st_index = (self.stm_anchor_num - 1) * chunk_index
+                anchor_index = self.mask_ids[st_index : st_index + self.stm_anchor_num]
+                todo_index = np.where((self.image_index > anchor_index[0])*(self.image_index < anchor_index[-1]))[0]
+
+
+            chunk_len = len(todo_index)
+            chunk_start = todo_index[0] if chunk_len>0 else -1 
         return chunk_start, chunk_len
 
     def loadSTMData(self, shot_index):
         N_masks = np.zeros([self.stm_mem_len, self.stm_height, self.stm_width], dtype=np.uint8)
         N_frames = np.zeros([self.stm_mem_len, self.stm_height, self.stm_width, 3], dtype=np.float32)
         # load initial template frames
-        for f,index in enumerate(self.mask_index):
+        init_index = self.mask_index
+        if self.stm_anchor_num != -1:
+            init_index = init_index[:self.stm_anchor_num]
+            self.mask_num = len(init_index)
+            #import pdb; pdb.set_trace()
+
+        for f,index in enumerate(init_index):
             mask_name = self.mask_files[self.mask_file_index[f]]
             if os.path.exists(mask_name):
                 mask = Image.open(mask_name).convert('P')
@@ -218,42 +247,60 @@ class YouTopDataLoader(object):
 
     def updateSTMData(self, shot_index, chunk_index, N_frames, N_masks, mask_id_relabel):
         chunk_start, chunk_len = self.getChunkIndexLocal(shot_index, chunk_index)
-        if self.stm_mode == 'shot' and chunk_index > 0:
-            # update mask
-            # read from the previous prop mask
-            mask_index = self.image_index[chunk_start - 1]
-            mask_file = self.mask_template_output % self.convertIndexOutput(mask_index)
-            if not os.path.exists(mask_file):
-                print('%s does not exist!' % mask_file)
-                # object disappears in the middle, use the first frame
-                mask_file = self.mask_files[shot_index]
-                print('load first frame: %s!' % mask_file)
-                mask_index = self.image_index[0]
-            mask = Image.open(mask_file).convert('P')
-            N_masks[0] = np.array(mask.resize((self.stm_width,self.stm_height),Image.NEAREST), dtype=np.uint8)
-            N_masks[0] = mask_id_relabel[N_masks[0]]
-            K = N_masks[0].max()
-        else:
-            K = N_masks[:self.mask_num].max()
-        if K == 0:# no mask to propagate
+        if chunk_len == 0:
             return None, None, 0
+        else:
+            # load mask
+            if self.stm_mode == 'shot' and chunk_index > 0:
+                # update mask
+                # read from the previous prop mask
+                mask_index = self.image_index[chunk_start - 1]
+                mask_file = self.mask_template_output % self.convertIndexOutput(mask_index)
+                if not os.path.exists(mask_file):
+                    print('%s does not exist!' % mask_file)
+                    # object disappears in the middle, use the first frame
+                    mask_file = self.mask_files[shot_index]
+                    print('load first frame: %s!' % mask_file)
+                    mask_index = self.image_index[0]
+                mask = Image.open(mask_file).convert('P')
+                N_masks[0] = np.array(mask.resize((self.stm_width,self.stm_height),Image.NEAREST), dtype=np.uint8)
+                N_masks[0] = mask_id_relabel[N_masks[0]]
+                K = N_masks[0].max()
 
-        if self.stm_mode == 'shot' and chunk_index > 0:
-            image_file = self.image_template % mask_index
-            image = Image.open(image_file).convert('RGB')
-            N_frames[0] = np.array(image.resize((self.stm_width,self.stm_height),Image.BILINEAR))/255.
+                image_file = self.image_template % mask_index
+                image = Image.open(image_file).convert('RGB')
+                N_frames[0] = np.array(image.resize((self.stm_width,self.stm_height),Image.BILINEAR))/255.
+            else:
+                # index-based
+                if self.stm_anchor_num != -1 and chunk_index > 0:
+                    N_masks[:] = 0
+                    N_frames[:] = 0
+                    st_index = (self.stm_anchor_num - 1) * chunk_index
+                    anchor_index = range(st_index, min(len(self.mask_ids), st_index + self.stm_anchor_num))
+                    self.mask_num = len(anchor_index)
+                    #import pdb; pdb.set_trace()
+                    for i,j in enumerate(anchor_index):
+                        mask = Image.open(self.mask_files[j]).convert('P')
+                        N_masks[i] = mask_id_relabel[np.array(mask.resize((self.stm_width,self.stm_height),Image.NEAREST), dtype=np.uint8)]
+                        image_file = self.image_template % self.mask_ids[j]
+                        image = Image.open(image_file).convert('RGB')
+                        N_frames[i] = np.array(image.resize((self.stm_width,self.stm_height),Image.BILINEAR))/255.
+                K = N_masks[:self.mask_num].max()
+            if K == 0:# no mask to propagate
+                return None, None, 0
 
-        for f in range(chunk_len):
-            index = self.image_index[chunk_start + f]
-            image_file = self.image_template % index
-            image = Image.open(image_file).convert('RGB')
-            N_frames[self.mask_num + f] = np.array(image.resize((self.stm_width,self.stm_height),Image.BILINEAR))/255.
-        
-        # add the extra batch dimension
-        Fs = torch.from_numpy(np.transpose(N_frames[:self.mask_num+chunk_len].copy(), (3, 0, 1, 2)).copy()[None,:]).float()
-        Ms = torch.from_numpy(self.All_to_onehot(mask_id_relabel[N_masks[:self.mask_num+chunk_len]], K+1).copy()[None,:]).float()
-        num_objects = torch.LongTensor([mask_id_relabel.max()])
-        return Fs, Ms, num_objects
+            # load images for propagation
+            for f in range(chunk_len):
+                index = self.image_index[chunk_start + f]
+                image_file = self.image_template % index
+                image = Image.open(image_file).convert('RGB')
+                N_frames[self.mask_num + f] = np.array(image.resize((self.stm_width,self.stm_height),Image.BILINEAR))/255.
+            
+            # add the extra batch dimension
+            Fs = torch.from_numpy(np.transpose(N_frames[:self.mask_num+chunk_len].copy(), (3, 0, 1, 2)).copy()[None,:]).float()
+            Ms = torch.from_numpy(self.All_to_onehot(mask_id_relabel[N_masks[:self.mask_num+chunk_len]], K+1).copy()[None,:]).float()
+            num_objects = torch.LongTensor([mask_id_relabel.max()])
+            return Fs, Ms, num_objects
 
     def getShotOutputIndex(self, shot_index, chunk_index):
         # result_index: position in STM result array
@@ -264,6 +311,7 @@ class YouTopDataLoader(object):
         # remove already saved mask seg
         tosave_index = removeArr(self.shot_list[shot_index], self.mask_index)
         output_id = np.in1d(output_index, tosave_index)
+        # import pdb; pdb.set_trace()
         return self.mask_num + result_index[output_id], self.convertIndexOutput(output_index[output_id])
 
 
@@ -297,7 +345,7 @@ if __name__ == '__main__' :
             if args.redo or not os.path.exists(mask_file_out):
                 mask_file_in = dataloader.mask_files[dataloader.mask_file_index[i]]
                 if os.path.exists(mask_file_in):
-                    shutil.copyfile(mask_file_in, mask_file_out)
+                    shutil.copy(mask_file_in, mask_file_out)
                 else:
                     output = Image.fromarray(np.zeros([dataloader.height, dataloader.width], np.uint8))
                     output.save(mask_file_out)
@@ -315,13 +363,15 @@ if __name__ == '__main__' :
             print('non-existent or empty mask files', [dataloader.mask_files[x] for x in dataloader.mask_file_index])
             continue
 
-        chunk_num = dataloader.getShotChunkNum(shot_id)
-        for chunk_id in range(chunk_num):
+        dataloader.getShotChunkNum(shot_id)
+        for chunk_id in range(dataloader.chunk_num):
             result_id, output_id = dataloader.getShotOutputIndex(shot_id, chunk_id)
+            #import pdb; pdb.set_trace()
             if args.redo or not os.path.exists(dataloader.mask_template_output % output_id[-1]):
                 Fs, Ms, num_objects = dataloader.updateSTMData(shot_id, chunk_id, N_frames, N_masks, mask_id_relabel)
                 if num_objects > 0:
                     print('chunk_id:',chunk_id, 'num_object:', num_objects)
+                    #import pdb; pdb.set_trace()
                     pred, Es = Run_video(model, Fs, Ms, Fs.shape[2], num_objects,\
                                          Mem_every = args.stm_mem_step, Mem_number=None, st_frames=dataloader.mask_num)
 
@@ -334,4 +384,5 @@ if __name__ == '__main__' :
                             pE = pred[result_id[z]]
                             output = Image.fromarray(overlay_davis(pF, pE, colors))
                         output = output.resize((dataloader.width, dataloader.height),Image.NEAREST)
+                        print(output_id[z])
                         output.save(dataloader.mask_template_output % output_id[z])
