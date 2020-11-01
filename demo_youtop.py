@@ -242,7 +242,7 @@ class YouTopDataLoader(object):
                 image_file = self.image_template % index
                 image = Image.open(image_file).convert('RGB')
                 N_frames[f] = np.array(image.resize((self.stm_width,self.stm_height),Image.BILINEAR))/255.
-                # print('init',mask_name,image_file)
+                print('init',mask_name,image_file)
         return N_frames, N_masks
 
     def updateSTMData(self, shot_index, chunk_index, N_frames, N_masks, mask_id_relabel):
@@ -260,11 +260,11 @@ class YouTopDataLoader(object):
                     print('%s does not exist!' % mask_file)
                     # object disappears in the middle, use the first frame
                     mask_file = self.mask_files[shot_index]
-                    print('load first frame: %s!' % mask_file)
+                    #print('load first frame: %s!' % mask_file)
                     mask_index = self.image_index[0]
                 mask = Image.open(mask_file).convert('P')
                 N_masks[0] = np.array(mask.resize((self.stm_width,self.stm_height),Image.NEAREST), dtype=np.uint8)
-                N_masks[0] = mask_id_relabel[N_masks[0]]
+                N_masks[0] = N_masks[0]
                 K = N_masks[0].max()
 
                 image_file = self.image_template % mask_index
@@ -282,11 +282,11 @@ class YouTopDataLoader(object):
                     for i,j in enumerate(anchor_index):
                         mask_file = self.mask_files[j]
                         mask = Image.open(mask_file).convert('P')
-                        N_masks[i] = mask_id_relabel[np.array(mask.resize((self.stm_width,self.stm_height),Image.NEAREST), dtype=np.uint8)]
+                        N_masks[i] = np.array(mask.resize((self.stm_width,self.stm_height),Image.NEAREST), dtype=np.uint8)
                         image_file = self.image_template % self.mask_ids[j]
                         image = Image.open(image_file).convert('RGB')
                         N_frames[i] = np.array(image.resize((self.stm_width,self.stm_height),Image.BILINEAR))/255.
-                        # print('init',mask_file,image_file)
+                        #print(chunk_index, mask_file, image_file)
                 K = N_masks[:self.mask_num].max()
             if K == 0:# no mask to propagate
                 return None, None, 0
@@ -367,9 +367,6 @@ if __name__ == '__main__' :
         dataloader.getShotChunkNum(shot_id)
         for chunk_id in range(dataloader.chunk_num):
             result_id, output_id = dataloader.getShotOutputIndex(shot_id, chunk_id)
-            if len(output_id) == 0:
-                import pdb; pdb.set_trace()
-            #import pdb; pdb.set_trace()
             if args.redo or not os.path.exists(dataloader.mask_template_output % output_id[-1]):
                 Fs, Ms, num_objects = dataloader.updateSTMData(shot_id, chunk_id, N_frames, N_masks, mask_id_relabel)
                 if num_objects > 0:
@@ -379,6 +376,7 @@ if __name__ == '__main__' :
                                          Mem_every = args.stm_mem_step, Mem_number=None, st_frames=dataloader.mask_num)
 
                     pred = mask_id_relabel_inv[pred]
+                    #import pdb; pdb.set_trace()
                     for z in range(len(result_id)):
                         if args.output_vis == 0:
                             output = Image.fromarray(pred[result_id[z]])
