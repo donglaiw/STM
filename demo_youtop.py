@@ -175,7 +175,7 @@ class YouTopDataLoader(object):
         else:
             # use k-anchors
             mask_step = self.stm_anchor_num - 1
-            self.chunk_num = 1 + ((len(self.mask_index) - self.stm_anchor_num) + (mask_step - 1)) // mask_step
+            self.chunk_num = 1 + (max(0, len(self.mask_index) - self.stm_anchor_num) + (mask_step - 1)) // mask_step
 
     def getShotImageIndex(self, shot_index):
         # original frame index
@@ -208,7 +208,9 @@ class YouTopDataLoader(object):
             chunk_start = chunk_index * chunk_len
             chunk_len = min(chunk_len, len(self.image_index) - chunk_start)
         else:
-            if chunk_index == 0:
+            if self.chunk_num == 1:
+                todo_index = range(len(self.image_index))
+            elif chunk_index == 0:
                 anchor_index = self.mask_index[self.stm_anchor_num-1]
                 todo_index = np.where(self.image_index < anchor_index)[0]
             elif chunk_index == self.chunk_num - 1:
@@ -242,7 +244,7 @@ class YouTopDataLoader(object):
                 image_file = self.image_template % index
                 image = Image.open(image_file).convert('RGB')
                 N_frames[f] = np.array(image.resize((self.stm_width,self.stm_height),Image.BILINEAR))/255.
-                print('init',mask_name,image_file)
+                # print('init',mask_name,image_file)
         return N_frames, N_masks
 
     def updateSTMData(self, shot_index, chunk_index, N_frames, N_masks, mask_id_relabel):
@@ -286,7 +288,7 @@ class YouTopDataLoader(object):
                         image_file = self.image_template % self.mask_ids[j]
                         image = Image.open(image_file).convert('RGB')
                         N_frames[i] = np.array(image.resize((self.stm_width,self.stm_height),Image.BILINEAR))/255.
-                        #print(chunk_index, mask_file, image_file)
+                        print(chunk_index, mask_file, image_file)
                 K = N_masks[:self.mask_num].max()
             if K == 0:# no mask to propagate
                 return None, None, 0
