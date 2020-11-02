@@ -301,9 +301,9 @@ class YouTopDataLoader(object):
                 N_frames[self.mask_num + f] = np.array(image.resize((self.stm_width,self.stm_height),Image.BILINEAR))/255.
             
             # add the extra batch dimension
-            Fs = torch.from_numpy(np.transpose(N_frames[:self.mask_num+chunk_len].copy(), (3, 0, 1, 2)).copy()[None,:]).float()
-            Ms = torch.from_numpy(self.All_to_onehot(mask_id_relabel[N_masks[:self.mask_num+chunk_len]], K+1).copy()[None,:]).float()
             num_objects = torch.LongTensor([mask_id_relabel.max()])
+            Fs = torch.from_numpy(np.transpose(N_frames[:self.mask_num+chunk_len].copy(), (3, 0, 1, 2)).copy()[None,:]).float()
+            Ms = torch.from_numpy(self.All_to_onehot(mask_id_relabel[N_masks[:self.mask_num+chunk_len]], num_objects+1).copy()[None,:]).float()
             return Fs, Ms, num_objects
 
     def getShotOutputIndex(self, shot_index, chunk_index):
