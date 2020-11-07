@@ -198,9 +198,9 @@ class YouTopDataLoader(object):
         elif self.stm_mode == 'index':
             index = self.shot_list[shot_index]
             # naive: assume the shot_list is continuous
-            self.mask_file_index = np.where((self.mask_ids >= index[0]) * (self.mask_ids <= index[-1]))[0]
+            self.mask_file_index = np.where((self.mask_ids >= min(index)) * (self.mask_ids <= max(index)))[0]
             # remove redundant ones
-            self.mask_file_index = self.mask_file_index[np.in1d(self.mask_ids[self.mask_file_index], self.image_index)]
+            #self.mask_file_index = self.mask_file_index[np.in1d(self.mask_ids[self.mask_file_index], self.image_index)]
             self.mask_index = self.mask_ids[self.mask_file_index]
             
         self.mask_num = len(self.mask_index)
@@ -245,6 +245,10 @@ class YouTopDataLoader(object):
             init_index = init_index[:self.stm_anchor_num]
             self.mask_num = len(init_index)
             #import pdb; pdb.set_trace()
+        else: # if bigger than the default size
+            thres = 0.8
+            if len(init_index) > thres * self.stm_mem_len:
+                init_index = np.random.permutation(init_index)[: int(thres * self.stm_mem_len)] 
 
         for f,index in enumerate(init_index):
             mask_name = self.mask_files[self.mask_file_index[f]]
