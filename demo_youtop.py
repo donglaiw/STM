@@ -179,12 +179,17 @@ class YouTopDataLoader(object):
 
     def getShotImageIndex(self, shot_index):
         # original frame index
-        image_index_anchor = self.shot_list[shot_index][:-1]
+        image_index_anchor = self.shot_list[shot_index]
+        # assume it's consecutive
         image_index = image_index_anchor.reshape([-1,1]) + range(0, self.mask_index_factor_output[0], self.stm_step)
+        # remove non-consecutive
+        bad_row = np.where(image_index_anchor[1:] - image_index_anchor[:-1] != self.mask_index_factor_output[0])[0]
+        image_index[bad_row, 1:] = -1
+        image_index[-1, 1:] = -1
+        # divide into consecutive chunks
+        #image_index = image_index_anchor.reshape([-1,1]) + range(0, self.mask_index_factor_output[0], self.stm_step)
         # add the last frame
-        self.image_index = np.unique(list(image_index.ravel()) + [self.shot_list[shot_index][-1]])
-        # remove template frame
-        self.image_index = removeArr(self.image_index, self.mask_index)
+        self.image_index = np.unique(image_index[image_index >= 0])
                          
     def getShotMaskIndex(self, shot_index):
         if self.stm_mode == 'shot':
@@ -192,9 +197,15 @@ class YouTopDataLoader(object):
             self.mask_index = [self.shot_list[shot_index][0]]
         elif self.stm_mode == 'index':
             index = self.shot_list[shot_index]
+            # naive: assume the shot_list is continuous
             self.mask_file_index = np.where((self.mask_ids >= index[0]) * (self.mask_ids <= index[-1]))[0]
+            # remove redundant ones
+            self.mask_file_index = self.mask_file_index[np.in1d(self.mask_ids[self.mask_file_index], self.image_index)]
             self.mask_index = self.mask_ids[self.mask_file_index]
+            
         self.mask_num = len(self.mask_index)
+        # remove template frame
+        self.image_index = removeArr(self.image_index, self.mask_index)
 
     def All_to_onehot(self, masks, K = 1):
         Ms = np.zeros((K, masks.shape[0], masks.shape[1], masks.shape[2]), dtype=np.uint8)
@@ -334,13 +345,13 @@ if __name__ == '__main__' :
     # util
     for shot_id in range(dataloader.shot_num):
         print('shot',shot_id)
+        # load image index
+        dataloader.getShotImageIndex(shot_id)
         # load mask index
         dataloader.getShotMaskIndex(shot_id)
         if dataloader.mask_num == 0:
             print('miss annotation')
             continue
-        # load image index
-        dataloader.getShotImageIndex(shot_id)
 
         # copy or create template frames
         for i,index in enumerate(dataloader.mask_index): 
