@@ -262,7 +262,7 @@ class YouTopDataLoader(object):
                 # print('init',mask_name,image_file)
         return N_frames, N_masks
 
-    def updateSTMData(self, shot_index, chunk_index, N_frames, N_masks, mask_id_relabel):
+    def updateSTMData(self, shot_index, chunk_index, N_frames, N_masks, mask_id_relabel, mask_id_relabel_inv):
         chunk_start, chunk_len = self.getChunkIndexLocal(shot_index, chunk_index)
         if chunk_len == 0:
             return None, None, 0
@@ -316,10 +316,23 @@ class YouTopDataLoader(object):
                 N_frames[self.mask_num + f] = np.array(image.resize((self.stm_width,self.stm_height),Image.BILINEAR))/255.
             
             # add the extra batch dimension
+            if K >= len(mask_id_relabel):
+                tmp = mask_id_relabel.copy()
+                tmp_inv = mask_id_relabel_inv.copy()
+                new_id = removeArr(np.unique(N_masks[:self.mask_num]), tmp)
+                mask_id_relabel_inv = np.zeros(len(tmp_inv) + len(new_id), np.uint8)
+                mask_id_relabel_inv[:len(tmp_inv)] = tmp_inv
+                mask_id_relabel_inv[-len(new_id):] = new_id
+
+                mask_id_relabel = np.zeros(K+1, np.uint8)
+                mask_id_relabel[:len(tmp)] = tmp
+                mask_id_relabel[new_id] = len(tmp_inv) + np.arange(len(new_id))
+
+
             num_objects = torch.LongTensor([mask_id_relabel.max()])
             Fs = torch.from_numpy(np.transpose(N_frames[:self.mask_num+chunk_len].copy(), (3, 0, 1, 2)).copy()[None,:]).float()
             Ms = torch.from_numpy(self.All_to_onehot(mask_id_relabel[N_masks[:self.mask_num+chunk_len]], num_objects+1).copy()[None,:]).float()
-            return Fs, Ms, num_objects
+            return Fs, Ms, num_objects, mask_id_relabel, mask_id_relabel_inv
 
     def getShotOutputIndex(self, shot_index, chunk_index):
         # result_index: position in STM result array
@@ -385,7 +398,8 @@ if __name__ == '__main__' :
         for chunk_id in range(dataloader.chunk_num):
             result_id, output_id = dataloader.getShotOutputIndex(shot_id, chunk_id)
             if args.redo or not os.path.exists(dataloader.mask_template_output % output_id[-1]):
-                Fs, Ms, num_objects = dataloader.updateSTMData(shot_id, chunk_id, N_frames, N_masks, mask_id_relabel)
+                # mask_id_relabel can change
+                Fs, Ms, num_objects, mask_id_relabel, mask_id_relabel_inv = dataloader.updateSTMData(shot_id, chunk_id, N_frames, N_masks, mask_id_relabel, mask_id_relabel_inv)
                 if num_objects > 0:
                     print('chunk_id:',chunk_id, 'num_object:', num_objects)
                     #import pdb; pdb.set_trace()
