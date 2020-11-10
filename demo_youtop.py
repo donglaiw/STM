@@ -41,8 +41,18 @@ def get_arguments():
 def convertClusterStrToList(input_str):
     if input_str[-1] == ';':
         input_str = input_str[:-1]
-    output_list = [np.array([int(y) for y in x.split(',')]) for x in input_str.split(';')]
-    return output_list
+    cluster_str_list = input_str.split(';')
+    cluster_list = [None] * len(cluster_str_list)
+    for i,x in enumerate(cluster_str_list):
+        out = []
+        for y in x.split(','):
+            if '-' in y:
+                tmp = [int(z) for z in y.split('-')]
+                out += range(tmp[0], tmp[1]+1)
+            else:
+                out += [int(y)]
+        cluster_list[i] = np.array(out)
+    return cluster_list
 
 def extractId(fn):
     err = 0
@@ -306,7 +316,7 @@ class YouTopDataLoader(object):
                         print(chunk_index, mask_file, image_file)
                 K = N_masks[:self.mask_num].max()
             if K == 0:# no mask to propagate
-                return None, None, 0
+                return None, None, 0, mask_id_relabel, mask_id_relabel_inv
 
             # load images for propagation
             for f in range(chunk_len):
@@ -397,6 +407,8 @@ if __name__ == '__main__' :
         dataloader.getShotChunkNum(shot_id)
         for chunk_id in range(dataloader.chunk_num):
             result_id, output_id = dataloader.getShotOutputIndex(shot_id, chunk_id)
+            if len(output_id)==0:
+                import pdb; pdb.set_trace()
             if args.redo or not os.path.exists(dataloader.mask_template_output % output_id[-1]):
                 # mask_id_relabel can change
                 Fs, Ms, num_objects, mask_id_relabel, mask_id_relabel_inv = dataloader.updateSTMData(shot_id, chunk_id, N_frames, N_masks, mask_id_relabel, mask_id_relabel_inv)
